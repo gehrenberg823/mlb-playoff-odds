@@ -1,0 +1,36 @@
+{
+  "fangraphs": {
+    "base_url": "https://www.fangraphs.com/standings/playoff-odds",
+    "view": "div",
+    "sources": ["fg", "fg-war", "atc", "thebat", "oopsy"],
+    "source_labels": {
+      "fg":     "FanGraphs",
+      "fg-war": "FG WAR",
+      "atc":    "ATC",
+      "thebat": "THE BAT",
+      "oopsy":  "OOPSY"
+    },
+    "outcomes": {
+      "make_playoffs": "poffTitle",
+      "win_division": "divTitle",
+      "win_pennant":  "csWin",
+      "win_world_series": "wsWin"
+    }
+  },
+  "kalshi": {
+    "base_url": "https://api.elections.kalshi.com/trade-api/v2",
+    "season_year": "26",
+    "market_url_template": "https://kalshi.com/markets/{series_lower}",
+    "outcomes": {
+      "make_playoffs":    ["KXMLBPLAYOFFS"],
+      "win_division":     ["KXMLBALEAST", "KXMLBALCENT", "KXMLBALWEST",
+                           "KXMLBNLEAST", "KXMLBNLCENT", "KXMLBNLWEST"],
+      "win_pennant":      ["KXMLBAL", "KXMLBNL"],
+      "win_world_series": ["KXMLB"]
+    }
+  },
+  "http": {
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "timeout_seconds": 30
+  }
+}

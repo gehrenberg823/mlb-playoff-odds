@@ -1,0 +1,71 @@
+"""Build the fair-vs-market table.
+
+For each outcome and team, one row with:
+  - aggregated fair probability (mean of FanGraphs sources)
+  - Kalshi yes_bid / yes_ask / last_price (NaN if no market exists)
+  - implied mid (mean of bid/ask when both present)
+  - fair_minus_mid (fair_prob - implied_mid, useful sanity column)
+"""
+from __future__ import annotations
+
+import pandas as pd
+
+from .config import load_config
+
+
+def _kalshi_by_outcome(kalshi_df: pd.DataFrame, outcome: str) -> pd.DataFrame:
+    if kalshi_df.empty:
+        cols = ["kalshi_team_suffix", "kalshi_ticker", "yes_bid", "yes_ask", "last_price"]
+        return pd.DataFrame(columns=cols)
+    return kalshi_df[kalshi_df.outcome == outcome][
+        ["kalshi_team_suffix", "kalshi_ticker", "yes_bid", "yes_ask", "last_price"]
+    ].copy()
+
+
+def build_report(
+    aggregated: pd.DataFrame,
+    kalshi_df: pd.DataFrame,
+    team_map: pd.DataFrame,
+    cfg: dict | None = None,
+) -> pd.DataFrame:
+    cfg = cfg or load_config()
+    outcomes = list(cfg["fangraphs"]["outcomes"].keys())
+
+    agg = aggregated.merge(
+        team_map[["fg_abbr", "kalshi_abbr"]],
+        left_on="team_abbr",
+        right_on="fg_abbr",
+        how="left",
+    ).drop(columns=["fg_abbr"])
+
+    rows = []
+    for outcome in outcomes:
+        kal = _kalshi_by_outcome(kalshi_df, outcome)
+
+        block = agg[[
+            "team_id","team_abbr","team_name","league","division",
+            "kalshi_abbr", outcome, "n_sources",
+        ]].rename(columns={outcome: "fair_prob"})
+        block.insert(0, "outcome", outcome)
+
+        merged = block.merge(
+            kal, left_on="kalshi_abbr", right_on="kalshi_team_suffix", how="left"
+        ).drop(columns=["kalshi_team_suffix"])
+
+        rows.append(merged)
+
+    report = pd.concat(rows, ignore_index=True)
+
+    # Kalshi's *_dollars fields are already decimals in [0,1] (e.g. "0.27" = 27¢).
+    for col in ("yes_bid", "yes_ask", "last_price"):
+        report[col] = pd.to_numeric(report[col], errors="coerce")
+
+    report["implied_mid"] = report[["yes_bid", "yes_ask"]].mean(axis=1)
+    report["fair_minus_mid"] = report["fair_prob"] - report["implied_mid"]
+
+    col_order = [
+        "outcome","team_abbr","team_name","league","division",
+        "fair_prob","n_sources",
+        "kalshi_ticker","yes_bid","yes_ask","last_price","implied_mid","fair_minus_mid",
+    ]
+    return report[col_order].sort_values(["outcome", "league", "division", "team_abbr"]).reset_index(drop=True)

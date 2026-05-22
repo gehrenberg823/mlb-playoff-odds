@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local scrape outputs — regenerated daily, not worth tracking
+data/raw/
+data/aggregated/
+data/signals/
+data/logs/
+data/web/
