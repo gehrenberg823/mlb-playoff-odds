@@ -15,7 +15,8 @@
       "win_division": "divTitle",
       "win_pennant":  "csWin",
       "win_world_series": "wsWin"
-    }
+    },
+    "min_sources": 4
   },
   "kalshi": {
     "base_url": "https://api.elections.kalshi.com/trade-api/v2",
@@ -31,6 +32,8 @@
   },
   "http": {
     "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "timeout_seconds": 30
+    "timeout_seconds": 30,
+    "max_retries": 5,
+    "retry_backoff_seconds": 1.0
   }
 }

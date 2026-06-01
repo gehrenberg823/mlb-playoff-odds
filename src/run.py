@@ -20,8 +20,14 @@ def run(target_date: str | None = None) -> Path:
     cfg = load_config()
     target = target_date or date.today().isoformat()
 
-    print(f"[1/4] Scraping FanGraphs ({len(cfg['fangraphs']['sources'])} sources)…")
+    n_configured = len(cfg["fangraphs"]["sources"])
+    print(f"[1/4] Scraping FanGraphs ({n_configured} sources)…")
     per_source = fetch_fg(cfg)
+    if len(per_source) < n_configured:
+        print(
+            f"  WARNING: only {len(per_source)}/{n_configured} sources fetched "
+            f"({', '.join(per_source)}); aggregating over the available set."
+        )
 
     raw_out = RAW_DIR / target
     raw_out.mkdir(parents=True, exist_ok=True)
