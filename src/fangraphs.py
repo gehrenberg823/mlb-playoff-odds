@@ -7,7 +7,7 @@ import re
 import time
 
 import pandas as pd
-import requests
+from curl_cffi import requests as cffi_requests
 
 from .config import load_config
 
@@ -17,41 +17,48 @@ _NEXT_DATA_RE = re.compile(
     r'<script id="__NEXT_DATA__"[^>]*>(.+?)</script>', re.S
 )
 
-# 429/5xx are transient on FanGraphs; retry them alongside network errors.
-_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+# FanGraphs sits behind a Cloudflare JS/TLS-fingerprint challenge: plain
+# requests/curl get a 403 "Just a moment..." page, while a real browser passes
+# transparently. curl_cffi impersonates a browser's TLS fingerprint and clears
+# the challenge. We rotate impersonation targets across retries because a given
+# target's fingerprint can age out and start returning 403 (older chrome builds
+# already do); a fresh target then gets through.
+_IMPERSONATE_TARGETS = ["chrome", "safari17_0", "chrome131", "chrome123"]
 
 
 def _fetch_html(source: str, cfg: dict) -> str:
-    """GET the page with retry + exponential backoff.
+    """GET the page via a browser-impersonating client, with retry + backoff.
 
-    Mirrors the resilience of the Kalshi client (kalshi._get): a single
-    timeout/connection-reset must not be allowed to abort the whole run,
-    which previously left the team-side projections silently stale while
-    the Kalshi client sailed through the same network blip.
+    Any non-200 (the Cloudflare challenge returns 403) or network error is
+    retried, rotating the impersonation fingerprint each attempt. A single
+    blip — or a stale fingerprint — must not abort the whole run and leave the
+    team-side projections silently stale.
     """
     url = f"{cfg['fangraphs']['base_url']}/{source}/{cfg['fangraphs']['view']}"
     http = cfg["http"]
-    headers = {"User-Agent": http["user_agent"]}
     timeout = http["timeout_seconds"]
     attempts = int(http.get("max_retries", 5))
     backoff = float(http.get("retry_backoff_seconds", 1.0))
+    targets = http.get("impersonate_targets") or _IMPERSONATE_TARGETS
 
     last_err: Exception | None = None
     for attempt in range(1, attempts + 1):
+        target = targets[(attempt - 1) % len(targets)]
         try:
-            r = requests.get(url, headers=headers, timeout=timeout)
-            if r.status_code in _RETRYABLE_STATUS:
-                last_err = RuntimeError(f"HTTP {r.status_code}")
-            else:
-                r.raise_for_status()
+            r = cffi_requests.get(url, impersonate=target, timeout=timeout)
+            if r.status_code == 200:
                 return r.text
-        except (requests.Timeout, requests.ConnectionError) as e:
+            # 403 = Cloudflare challenge not cleared by this fingerprint; 429/5xx
+            # are transient. Either way, retry with the next impersonation target.
+            last_err = RuntimeError(f"HTTP {r.status_code} (impersonate={target})")
+        except Exception as e:  # noqa: BLE001 — curl_cffi network/transport errors
             last_err = e
 
         if attempt < attempts:
             logger.warning(
-                "FanGraphs '%s' fetch failed (attempt %d/%d): %s — retrying in %.1fs",
-                source, attempt, attempts, last_err, backoff,
+                "FanGraphs '%s' fetch failed (attempt %d/%d, impersonate=%s): %s "
+                "— retrying in %.1fs",
+                source, attempt, attempts, target, last_err, backoff,
             )
             time.sleep(backoff)
             backoff *= 2
