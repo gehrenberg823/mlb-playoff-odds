@@ -226,7 +226,7 @@ if (ageH > 24) {
 }
 
 // ---- filters: outcome tabs + league pills
-let activeTab = "All", activeLg = "All";
+let activeTab = DATA.tabs[0], activeLg = "All";
 function pill(bar, label, count, on) {
   const b = document.createElement("button");
   b.innerHTML = count == null ? label : `${label} <span>${count}</span>`;
@@ -234,9 +234,9 @@ function pill(bar, label, count, on) {
   return b;
 }
 const tabBar = document.getElementById("tabs");
-["All", ...DATA.tabs].forEach(t => {
-  const n = t === "All" ? DATA.rows.length : DATA.rows.filter(r => r.tab === t).length;
-  const b = pill(tabBar, t, n, t === "All");
+DATA.tabs.forEach(t => {
+  const n = DATA.rows.filter(r => r.tab === t).length;
+  const b = pill(tabBar, t, n, t === activeTab);
   b.onclick = () => { activeTab = t; setActive(tabBar, b); draw(); };
   tabBar.appendChild(b);
 });
@@ -276,7 +276,7 @@ function draw() {
     th.classList.toggle("sorted-desc", th.dataset.k === sortKey && sortDir === -1);
   });
   const rows = DATA.rows
-    .filter(r => (activeTab === "All" || r.tab === activeTab) &&
+    .filter(r => (r.tab === activeTab) &&
                  (activeLg === "All" || r.league === activeLg))
     .sort(cmp);
   document.getElementById("rows").innerHTML = rows.map(r => {
