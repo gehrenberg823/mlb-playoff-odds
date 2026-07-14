@@ -42,10 +42,15 @@ def build_report(
     for outcome in outcomes:
         kal = _kalshi_by_outcome(kalshi_df, outcome)
 
-        block = agg[[
-            "team_id","team_abbr","team_name","league","division",
-            "kalshi_abbr", outcome, "n_sources",
-        ]].rename(columns={outcome: "fair_prob"})
+        cols = ["team_id","team_abbr","team_name","league","division",
+                "kalshi_abbr", outcome, "n_sources"]
+        ren = {outcome: "fair_prob"}
+        # carry source min/max through when the aggregate provides them
+        if f"{outcome}_min" in agg.columns:
+            cols += [f"{outcome}_min", f"{outcome}_max"]
+            ren[f"{outcome}_min"] = "fair_min"
+            ren[f"{outcome}_max"] = "fair_max"
+        block = agg[cols].rename(columns=ren)
         block.insert(0, "outcome", outcome)
 
         merged = block.merge(
@@ -68,4 +73,6 @@ def build_report(
         "fair_prob","n_sources",
         "kalshi_ticker","yes_bid","yes_ask","last_price","implied_mid","fair_minus_mid",
     ]
+    if "fair_min" in report.columns:
+        col_order[6:6] = ["fair_min", "fair_max"]
     return report[col_order].sort_values(["outcome", "league", "division", "team_abbr"]).reset_index(drop=True)

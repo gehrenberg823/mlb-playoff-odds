@@ -95,6 +95,38 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
         if cands:
             side, price, edge = max(cands, key=lambda c: c[2])
         spread = None if pd.isna(bid) or pd.isna(ask) else float(ask - bid)
+
+        # Maker posts on a 1c grid: bid+1c (join at bid on a 1c spread); when a
+        # side has no bid, undercut the ask by 1c. Same conventions as the golf
+        # books board — the realistic play on these wide season books.
+        def _post(b, a):
+            if pd.isna(b) and pd.isna(a):
+                return None
+            if pd.isna(b):
+                return max(0.01, float(a) - 0.01)
+            p = float(b) + 0.01
+            if not pd.isna(a) and p >= float(a):
+                p = float(b)          # 1c spread -> join the bid
+            return min(p, 0.99)
+        yes_post = _post(bid, ask)
+        no_post = _post(None if pd.isna(ask) else 1 - ask,
+                        None if pd.isna(bid) else 1 - bid)
+        post_side = post_price = post_roi = None
+        if not pd.isna(fair):
+            pcands = []
+            if yes_post:
+                pcands.append(("Yes", yes_post, float(fair) / yes_post - 1.0))
+            if no_post:
+                pcands.append(("No", no_post, float(1 - fair) / no_post - 1.0))
+            if pcands:
+                post_side, post_price, post_roi = max(pcands, key=lambda c: c[2])
+
+        # Source disagreement: min-max of the 5 FanGraphs sources
+        fmin = r.get("fair_min") if "fair_min" in r else None
+        fmax = r.get("fair_max") if "fair_max" in r else None
+        has_range = fmin is not None and fmax is not None and not pd.isna(fmin) and not pd.isna(fmax)
+        disagree = bool(has_range and (fmax - fmin) > 0.10)
+
         ticker = "" if pd.isna(r["kalshi_ticker"]) else r["kalshi_ticker"]
         out.append({
             "tab":      _tab_for(r["outcome"], r["league"], r["division"]),
@@ -114,6 +146,14 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
             "price":    None if price is None else f"{price * 100:.0f}¢",
             "edge":     None if edge is None else f"{edge * 100:+.1f}%",
             "edge_raw": edge,
+            "ask_raw":  None if pd.isna(ask) else float(ask),
+            "src":      f"{fmin*100:.0f}–{fmax*100:.0f}%" if has_range else "",
+            "src_w":    None if not has_range else float(fmax - fmin),
+            "disagree": disagree,
+            "post_side": post_side,
+            "post":     None if post_price is None else f"{post_price * 100:.0f}¢",
+            "post_roi": post_roi,
+            "post_roi_d": None if post_roi is None else f"{post_roi * 100:+.1f}%",
             "ticker":   ticker,
             "url":      _market_url(ticker),
         })
@@ -189,25 +229,29 @@ _TEMPLATE = r"""<!doctype html>
 <div class="stale" id="stale"></div>
 <div class="filters" id="tabs"></div>
 <div class="filters lg" id="lgs"></div>
+<div class="meta" id="groupline" style="margin-top:4px"></div>
 <div class="tblwrap"><table id="tbl">
  <thead><tr>
   <th data-k="outcome">Outcome</th>
   <th data-k="team">Team</th>
   <th data-k="div">Div</th>
   <th data-k="fair_raw">Fair</th>
+  <th data-k="src_w" title="min–max across the 5 FanGraphs sources">Src Range</th>
   <th data-k="book">Bid–Ask</th>
-  <th data-k="last">Last</th>
   <th data-k="spread">Spread</th>
-  <th data-k="side">Buy</th>
+  <th data-k="side">Take</th>
   <th data-k="price">Price</th>
-  <th data-k="edge_raw">Edge</th>
+  <th data-k="edge_raw">Take Edge</th>
+  <th data-k="post_side">Post</th>
+  <th data-k="post_roi">Post ROI</th>
   <th data-k="ticker">Market</th>
  </tr></thead>
  <tbody id="rows"></tbody>
 </table></div>
-<p class="note">Edge is executable at the touch: Buy Yes = fair − ask · Buy No = bid − fair.
- Rows highlight at edge ≥ +5%. Dimmed edges sit on books wider than 7¢ (thin — consider a maker post
- instead of taking). Dimmed rows have no Kalshi quotes.</p>
+<p class="note">Take = crossing at the touch (Buy Yes edge = fair − ask · Buy No edge = bid − fair).
+ Post = maker order at bid+1¢ (join on a 1¢ spread), ROI = fair ÷ post − 1 — no taker fees, fills not guaranteed.
+ Rows highlight at take edge ≥ +5%. Edges dim on books wider than 7¢ or when the 5 FanGraphs sources
+ disagree by more than 10 points (red Src Range). Dimmed rows have no Kalshi quotes.</p>
 
 <script>
 const DATA = __PAYLOAD__;
@@ -279,6 +323,20 @@ function draw() {
     .filter(r => (r.tab === activeTab) &&
                  (activeLg === "All" || r.league === activeLg))
     .sort(cmp);
+  // Group consistency: fair should sum to ~100% per division/pennant group
+  // (~1200% for the 12 playoff spots) — a rich/cheap ask sum flags a whole
+  // group mispriced, not just one team. Computed over the FULL tab (both leagues).
+  const grp = DATA.rows.filter(r => r.tab === activeTab);
+  const fairSum = grp.reduce((s, r) => s + (r.fair_raw || 0), 0) * 100;
+  const quoted = grp.filter(r => r.ask_raw != null);
+  const askSum = quoted.reduce((s, r) => s + r.ask_raw, 0) * 100;
+  document.getElementById("groupline").innerHTML =
+    `Group check — Σ fair <b>${fairSum.toFixed(0)}%</b> · Σ Kalshi ask <b>${askSum.toFixed(0)}%</b>` +
+    ` <span style="opacity:.7">(${quoted.length}/${grp.length} quoted)</span>` +
+    (quoted.length === grp.length && askSum > fairSum + 2
+      ? ` <span class="negv">— book is rich; NO side favored</span>`
+      : quoted.length === grp.length && askSum < fairSum - 2
+      ? ` <span class="pos">— book is cheap; YES side favored</span>` : "");
   document.getElementById("rows").innerHTML = rows.map(r => {
     const cls = [];
     if (r.edge_raw != null && r.edge_raw >= 0.05) cls.push("big");
@@ -290,12 +348,14 @@ function draw() {
       <td>${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" title="Open on Kalshi">${r.team}</a>` : r.team}</td>
       <td>${r.div}</td>
       <td>${r.fair || "—"}</td>
+      <td class="${r.disagree ? "negv" : ""}" ${r.disagree ? 'title="sources disagree by >10 points — weak consensus"' : ""}>${r.src || "—"}</td>
       <td>${r.book || "—"}</td>
-      <td>${r.last || "—"}</td>
       <td>${r.spread || "—"}</td>
       <td>${r.side ? `<span class="${r.side === "Yes" ? "pos" : "negv"}">${r.side}</span>` : "—"}</td>
       <td>${r.price || "—"}</td>
-      <td class="${edgeCls}${wide}">${r.edge || "—"}</td>
+      <td class="${edgeCls}${wide}${r.disagree ? " widecell" : ""}">${r.edge || "—"}</td>
+      <td>${r.post_side ? `<span class="${r.post_side === "Yes" ? "pos" : "negv"}">${r.post_side} ${r.post}</span>` : "—"}</td>
+      <td class="${r.post_roi == null ? "dash" : (r.post_roi > 0 ? "pos" : "negv")}${r.disagree ? " widecell" : ""}">${r.post_roi_d || "—"}</td>
       <td>${r.url ? `<a href="${r.url}" target="_blank" rel="noopener">${r.ticker}</a>` : (r.ticker || "—")}</td>
     </tr>`;
   }).join("");
