@@ -85,25 +85,52 @@ def fetch_futures(team_map: pd.DataFrame, timeout: int = 40) -> pd.DataFrame:
                 return abbr
         return None
 
+    # Devigging forces whatever is priced to sum to 100%, so a market is only
+    # publishable when it is COMPLETE: every expected team present, priced, and
+    # name-mapped, with a plausible overround. Anything less silently inflates
+    # the remaining teams — skip the market instead (blank beats wrong).
+    EXPECTED_TEAMS = {"win_world_series": 30, "win_pennant": 15, "win_division": 5}
+    OVERROUND_BAND = (1.01, 2.0)
+
     rows = []
     for m in futs:
-        outcome = _outcome_for((m.get("special") or {}).get("description"))
+        desc = (m.get("special") or {}).get("description") or ""
+        outcome = _outcome_for(desc)
         if not outcome:
             continue
+
+        def skip(reason: str):
+            print(f"  Pinnacle sanity: SKIPPING '{desc}' — {reason}")
+
         parts = {p["id"]: p.get("name") for p in m.get("participants", [])}
+        if len(parts) != EXPECTED_TEAMS[outcome]:
+            skip(f"{len(parts)} participants, expected {EXPECTED_TEAMS[outcome]}")
+            continue
         mkts = requests.get(f"{BASE}/matchups/{m['id']}/markets/related/straight",
                             headers=HEADERS, timeout=timeout).json()
         ml = next((x for x in mkts if x.get("type") == "moneyline" and x.get("period") == 0), None)
         if not ml:
+            skip("no moneyline market in payload")
             continue
         priced = [(p["participantId"], p["price"]) for p in ml.get("prices", [])
                   if p.get("price") is not None and p.get("participantId") in parts]
-        if len(priced) < 2:
+        if len(priced) != len(parts):
+            skip(f"only {len(priced)}/{len(parts)} teams priced — devig would inflate the rest")
             continue
-        fair = _power_devig([_implied(a) for _, a in priced])
+        unmapped = [parts[pid] for pid, _ in priced if abbr_for(parts[pid]) is None]
+        if unmapped:
+            skip(f"unmapped team name(s): {unmapped} — extend teams.csv/nickname matching")
+            continue
+        implieds = [_implied(a) for _, a in priced]
+        t = sum(implieds)
+        if not (OVERROUND_BAND[0] <= t <= OVERROUND_BAND[1]):
+            skip(f"implied sum {t:.3f} outside sane band {OVERROUND_BAND} — payload suspect")
+            continue
+
+        fair = _power_devig(implieds)
+        assert abs(sum(fair) - 1.0) < 1e-6, f"devig failed to normalize ({sum(fair):.6f})"
         for (pid, _), prob in zip(priced, fair):
-            abbr = abbr_for(parts[pid])
-            if abbr:
-                rows.append({"outcome": outcome, "team_abbr": abbr, "pinnacle_prob": prob})
+            rows.append({"outcome": outcome, "team_abbr": abbr_for(parts[pid]),
+                         "pinnacle_prob": prob})
 
     return pd.DataFrame(rows, columns=["outcome", "team_abbr", "pinnacle_prob"])
