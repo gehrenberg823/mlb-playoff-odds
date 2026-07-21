@@ -8,6 +8,7 @@ For each outcome and team, one row with:
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from .config import load_config
@@ -72,12 +73,24 @@ def build_report(
     for col in ("yes_bid", "yes_ask", "last_price", "pinnacle_prob"):
         report[col] = pd.to_numeric(report[col], errors="coerce")
 
+    # Blend the sharp anchor into fair where offered: logit-space 70% FanGraphs
+    # consensus / 30% Pinnacle (FG keeps the majority — it's 5 sources — but the
+    # futures book prices news the projections haven't ingested yet). fg_prob
+    # preserves the pure projection consensus; fair_min/max stay FG-relative.
+    report["fg_prob"] = report["fair_prob"]
+    mask = report["pinnacle_prob"].notna() & report["fair_prob"].notna()
+    if mask.any():
+        fg = report.loc[mask, "fair_prob"].clip(1e-4, 1 - 1e-4)
+        pn = report.loc[mask, "pinnacle_prob"].clip(1e-4, 1 - 1e-4)
+        z = 0.70 * np.log(fg / (1 - fg)) + 0.30 * np.log(pn / (1 - pn))
+        report.loc[mask, "fair_prob"] = 1.0 / (1.0 + np.exp(-z))
+
     report["implied_mid"] = report[["yes_bid", "yes_ask"]].mean(axis=1)
     report["fair_minus_mid"] = report["fair_prob"] - report["implied_mid"]
 
     col_order = [
         "outcome","team_abbr","team_name","league","division",
-        "fair_prob","n_sources","pinnacle_prob",
+        "fair_prob","fg_prob","n_sources","pinnacle_prob",
         "kalshi_ticker","yes_bid","yes_ask","last_price","implied_mid","fair_minus_mid",
     ]
     if "fair_min" in report.columns:

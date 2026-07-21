@@ -100,6 +100,16 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
             side, price, edge = max(cands, key=lambda c: c[2])
         spread = None if pd.isna(bid) or pd.isna(ask) else float(ask - bid)
 
+        # Pinnacle veto: if pricing off Pinnacle ALONE the chosen side has no
+        # edge, the market is siding with the sharps against FanGraphs — dim it.
+        pinn = r.get("pinnacle_prob")
+        pinn_veto = False
+        if edge is not None and edge > 0 and pinn is not None and not pd.isna(pinn):
+            if side == "Yes" and not pd.isna(ask):
+                pinn_veto = (float(pinn) - ask - _fee(ask)) < 0
+            elif side == "No" and not pd.isna(bid):
+                pinn_veto = (bid - float(pinn) - _fee(bid)) < 0
+
         # Maker posts on a 1c grid: bid+1c (join at bid on a 1c spread); when a
         # side has no bid, undercut the ask by 1c. Same conventions as the golf
         # books board — the realistic play on these wide season books.
@@ -132,7 +142,7 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
         disagree = bool(has_range and (fmax - fmin) > 0.10)
 
         ticker = "" if pd.isna(r["kalshi_ticker"]) else r["kalshi_ticker"]
-        pinn = r.get("pinnacle_prob")
+        fg = r.get("fg_prob")
         out.append({
             "tab":      _tab_for(r["outcome"], r["league"], r["division"]),
             "outcome":  OUTCOME_LABELS.get(r["outcome"], r["outcome"]),
@@ -141,8 +151,10 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
             "league":   r["league"],
             "fair":     _fmt_pct(fair),
             "fair_raw": None if pd.isna(fair) else float(fair),
+            "fg":       _fmt_pct(fg),
             "pinn":     _fmt_pct(pinn),
             "pinn_raw": None if pinn is None or pd.isna(pinn) else float(pinn),
+            "pinn_veto": bool(pinn_veto),
             "book":     (f"{_fmt_cents(bid)}–{_fmt_cents(ask)}"
                          if not pd.isna(bid) and not pd.isna(ask)
                          else _fmt_cents(bid) or _fmt_cents(ask)),
@@ -237,9 +249,9 @@ _TEMPLATE = r"""<!doctype html>
 <div class="top">
  <h1>MLB Playoff Odds — Fair vs Kalshi</h1>
  <div class="meta" id="meta"></div>
- <span class="help" title="Take = crossing at the touch, NET of Kalshi taker fees (Buy Yes edge = fair − ask − 0.07·ask·(1−ask); Buy No mirrored). Post = maker order at bid+1¢ (join on a 1¢ spread), ROI = fair ÷ post − 1 — makers pay no fee, fills not guaranteed.
-Pinn = de-vigged Pinnacle futures (independent sharp anchor; blank where Pinnacle offers no market). A big Fair-vs-Pinn gap usually means FanGraphs hasn't caught up to news — trust the edge less.
-Rows highlight at net take edge ≥ +5%. Edges dim on books wider than 7¢ or when the 5 FanGraphs sources disagree by more than 10 points (red Src Range). Dimmed rows have no Kalshi quotes.">ⓘ how to read</span>
+ <span class="help" title="Fair = FanGraphs 5-source consensus blended with de-vigged Pinnacle futures (70/30 in logit space) where Pinnacle offers the market; pure FanGraphs elsewhere (hover Fair for the components).
+Take = crossing at the touch, NET of Kalshi taker fees (Buy Yes edge = fair − ask − 0.07·ask·(1−ask); Buy No mirrored). Post = maker order at bid+1¢ (join on a 1¢ spread), ROI = fair ÷ post − 1 — makers pay no fee, fills not guaranteed.
+Rows highlight at net take edge ≥ +5%. Edges dim on books wider than 7¢, when the 5 FanGraphs sources disagree by more than 10 points (red Src Range), or with ⚠ when Pinnacle alone sees no edge on that side. Dimmed rows have no Kalshi quotes.">ⓘ how to read</span>
 </div>
 <div class="stale" id="stale"></div>
 <div class="filterrow">
@@ -320,8 +332,9 @@ const COLS = [
   {k: "team", label: "Team", left: 1,
    td: r => `<td class="left">${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" title="Open on Kalshi">${r.team}</a>` : r.team}</td>`},
   {k: "div", label: "Div", left: 1, td: r => `<td class="left">${r.div}</td>`},
-  {k: "fair_raw", label: "Fair", td: r => `<td>${r.fair || "—"}</td>`},
-  {k: "pinn_raw", label: "Pinn", optional: 1, title: "De-vigged Pinnacle futures — independent sharp anchor; a big Fair-vs-Pinn gap usually means FanGraphs hasn't caught up to news",
+  {k: "fair_raw", label: "Fair",
+   td: r => `<td${r.pinn ? ` title="blend of FG ${r.fg} (70%) · Pinn ${r.pinn} (30%)"` : ""}>${r.fair || "—"}</td>`},
+  {k: "pinn_raw", label: "Pinn", optional: 1, title: "De-vigged Pinnacle futures — blended into Fair at 30% where offered; a big FG-vs-Pinn gap usually means FanGraphs hasn't caught up to news",
    td: r => `<td>${r.pinn || "—"}</td>`},
   {k: "src_w", label: "Src Range", title: "min–max across the 5 FanGraphs sources",
    td: r => `<td class="${r.disagree ? "negv" : ""}" ${r.disagree ? 'title="sources disagree by >10 points — weak consensus"' : ""}>${r.src || "—"}</td>`},
@@ -330,7 +343,7 @@ const COLS = [
   {k: "side", label: "Take", td: r => `<td>${r.side ? `<span class="${r.side === "Yes" ? "pos" : "negv"}">${r.side}</span>` : "—"}</td>`},
   {k: "price", label: "Price", td: r => `<td>${r.price || "—"}</td>`},
   {k: "edge_raw", label: "Take Edge",
-   td: r => `<td class="${r.edge_raw == null ? "dash" : (r.edge_raw > 0 ? "pos" : "negv")}${r.wide ? " widecell" : ""}${r.disagree ? " widecell" : ""}">${r.edge || "—"}</td>`},
+   td: r => `<td class="${r.edge_raw == null ? "dash" : (r.edge_raw > 0 ? "pos" : "negv")}${r.wide ? " widecell" : ""}${r.disagree ? " widecell" : ""}${r.pinn_veto ? " widecell" : ""}"${r.pinn_veto ? ' title="Pinnacle alone sees no edge on this side — market may know something FanGraphs doesn’t"' : ""}>${r.edge || "—"}${r.pinn_veto ? " ⚠" : ""}</td>`},
   {k: "post_side", label: "Post", td: r => `<td>${r.post_side ? `<span class="${r.post_side === "Yes" ? "pos" : "negv"}">${r.post_side} ${r.post}</span>` : "—"}</td>`},
   {k: "post_roi", label: "Post ROI",
    td: r => `<td class="${r.post_roi == null ? "dash" : (r.post_roi > 0 ? "pos" : "negv")}${r.disagree ? " widecell" : ""}">${r.post_roi_d || "—"}</td>`},
