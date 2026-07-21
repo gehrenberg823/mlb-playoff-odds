@@ -27,6 +27,7 @@ def build_report(
     kalshi_df: pd.DataFrame,
     team_map: pd.DataFrame,
     cfg: dict | None = None,
+    pinnacle_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     cfg = cfg or load_config()
     outcomes = list(cfg["fangraphs"]["outcomes"].keys())
@@ -61,8 +62,14 @@ def build_report(
 
     report = pd.concat(rows, ignore_index=True)
 
+    # Independent sharp-market anchor (devigged Pinnacle futures), where offered.
+    if pinnacle_df is not None and not pinnacle_df.empty:
+        report = report.merge(pinnacle_df, on=["outcome", "team_abbr"], how="left")
+    else:
+        report["pinnacle_prob"] = pd.NA
+
     # Kalshi's *_dollars fields are already decimals in [0,1] (e.g. "0.27" = 27¢).
-    for col in ("yes_bid", "yes_ask", "last_price"):
+    for col in ("yes_bid", "yes_ask", "last_price", "pinnacle_prob"):
         report[col] = pd.to_numeric(report[col], errors="coerce")
 
     report["implied_mid"] = report[["yes_bid", "yes_ask"]].mean(axis=1)
@@ -70,7 +77,7 @@ def build_report(
 
     col_order = [
         "outcome","team_abbr","team_name","league","division",
-        "fair_prob","n_sources",
+        "fair_prob","n_sources","pinnacle_prob",
         "kalshi_ticker","yes_bid","yes_ask","last_price","implied_mid","fair_minus_mid",
     ]
     if "fair_min" in report.columns:

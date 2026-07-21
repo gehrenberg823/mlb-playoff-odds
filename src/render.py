@@ -83,9 +83,13 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
     for _, r in df.iterrows():
         fair = r["fair_prob"]
         bid, ask = r["yes_bid"], r["yes_ask"]
-        # Executable taker edges at the touch (NOT vs mid — mid flatters wide books)
-        yes_edge = None if pd.isna(fair) or pd.isna(ask) else float(fair - ask)
-        no_edge = None if pd.isna(fair) or pd.isna(bid) else float(bid - fair)
+        # Executable taker edges at the touch (NOT vs mid — mid flatters wide
+        # books), NET of Kalshi's taker fee 0.07·P·(1−P) — ~1.7¢ at midbook,
+        # which turns many small gross edges negative. Maker (Post) is fee-free.
+        def _fee(p):
+            return 0.07 * p * (1 - p)
+        yes_edge = None if pd.isna(fair) or pd.isna(ask) else float(fair - ask - _fee(ask))
+        no_edge = None if pd.isna(fair) or pd.isna(bid) else float(bid - fair - _fee(bid))
         side = price = edge = None
         cands = []
         if yes_edge is not None:
@@ -128,6 +132,7 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
         disagree = bool(has_range and (fmax - fmin) > 0.10)
 
         ticker = "" if pd.isna(r["kalshi_ticker"]) else r["kalshi_ticker"]
+        pinn = r.get("pinnacle_prob")
         out.append({
             "tab":      _tab_for(r["outcome"], r["league"], r["division"]),
             "outcome":  OUTCOME_LABELS.get(r["outcome"], r["outcome"]),
@@ -136,6 +141,8 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
             "league":   r["league"],
             "fair":     _fmt_pct(fair),
             "fair_raw": None if pd.isna(fair) else float(fair),
+            "pinn":     _fmt_pct(pinn),
+            "pinn_raw": None if pinn is None or pd.isna(pinn) else float(pinn),
             "book":     (f"{_fmt_cents(bid)}–{_fmt_cents(ask)}"
                          if not pd.isna(bid) and not pd.isna(ask)
                          else _fmt_cents(bid) or _fmt_cents(ask)),
@@ -188,31 +195,35 @@ _TEMPLATE = r"""<!doctype html>
 <style>
  :root{--bg:#0d1117;--card:#161b22;--line:#21262d;--txt:#e6edf3;--mut:#8b949e;--acc:#3fb950;--neg:#f85149;--amber:#d29922}
  *{box-sizing:border-box}
- body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
- .wrap{max-width:1060px;margin:0 auto;padding:26px 18px 70px}
- h1{font-size:22px;margin:0 0 4px}
- .meta{color:var(--mut);font-size:12.5px;margin:0 0 6px}
+ body{margin:0;background:var(--bg);color:var(--txt);font:13px/1.4 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+ .wrap{margin:0;padding:6px 10px 8px}
+ .wrap.measure{width:max-content}
+ .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+ h1{font-size:15px;margin:0}
+ .meta{color:var(--mut);font-size:11.5px;margin:0}
  .meta b{color:var(--txt)}
+ .help{color:var(--mut);font-size:11px;cursor:help;border-bottom:1px dotted var(--mut)}
  .stale{display:none;background:rgba(210,153,34,.12);border:1px solid var(--amber);color:var(--amber);
-   border-radius:8px;padding:8px 12px;font-size:12.5px;margin:10px 0}
- .filters{margin:14px 0 6px;display:flex;gap:8px;flex-wrap:wrap}
+   border-radius:8px;padding:4px 10px;font-size:11.5px;margin:4px 0 0}
+ .filterrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:5px 0 0}
+ .filters{display:flex;gap:5px;flex-wrap:wrap}
  .filters button{background:var(--card);color:var(--mut);border:1px solid var(--line);
-   padding:5px 12px;border-radius:999px;cursor:pointer;font-size:12.5px;font-weight:600}
+   padding:2px 9px;border-radius:999px;cursor:pointer;font-size:11.5px;font-weight:600}
  .filters button.active{color:var(--txt);border-color:var(--acc);background:rgba(63,185,80,.08)}
  .filters.lg button.active{border-color:#58a6ff;background:rgba(88,166,255,.08)}
- .filters button span{opacity:.55;font-size:11px}
- .tblwrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;margin-top:10px}
+ .filters button span{opacity:.55;font-size:10px}
+ .tables{display:flex;gap:10px;align-items:flex-start;margin-top:5px}
+ .tblwrap{flex:1 1 auto;border:1px solid var(--line);border-radius:10px;overflow:hidden}
  table{width:100%;border-collapse:collapse;background:var(--card)}
- thead th{position:sticky;top:0;background:#1b232e;z-index:2;
-   font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);
-   text-align:right;padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer;
+ thead th{background:#1b232e;
+   font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);
+   text-align:right;padding:4px 7px;border-bottom:1px solid var(--line);cursor:pointer;
    user-select:none;white-space:nowrap}
- thead th:first-child,thead th:nth-child(2),thead th:nth-child(3){text-align:left}
  thead th.sorted-asc::after{content:" ▲";font-size:9px;color:var(--acc)}
  thead th.sorted-desc::after{content:" ▼";font-size:9px;color:var(--acc)}
- td{padding:6px 12px;font-size:13px;text-align:right;border-bottom:1px solid var(--line);
+ td{padding:2px 7px;font-size:12px;text-align:right;border-bottom:1px solid var(--line);
    font-variant-numeric:tabular-nums;white-space:nowrap}
- td:first-child,td:nth-child(2),td:nth-child(3){text-align:left}
+ th.left,td.left{text-align:left}
  tr:last-child td{border-bottom:none}
  tr.big{background:rgba(63,185,80,.10)}
  tr.noquote td{opacity:.45}
@@ -220,38 +231,23 @@ _TEMPLATE = r"""<!doctype html>
  td.widecell{opacity:.5}
  td a{color:inherit;text-decoration:none;border-bottom:1px dotted var(--mut)}
  td a:hover{color:#58a6ff;border-bottom-color:#58a6ff}
- .note{color:var(--mut);font-size:11.5px;margin-top:10px}
 </style>
 </head>
 <body><div class="wrap">
-<h1>MLB Playoff Odds — Fair vs Kalshi</h1>
-<div class="meta" id="meta"></div>
+<div class="top">
+ <h1>MLB Playoff Odds — Fair vs Kalshi</h1>
+ <div class="meta" id="meta"></div>
+ <span class="help" title="Take = crossing at the touch, NET of Kalshi taker fees (Buy Yes edge = fair − ask − 0.07·ask·(1−ask); Buy No mirrored). Post = maker order at bid+1¢ (join on a 1¢ spread), ROI = fair ÷ post − 1 — makers pay no fee, fills not guaranteed.
+Pinn = de-vigged Pinnacle futures (independent sharp anchor; blank where Pinnacle offers no market). A big Fair-vs-Pinn gap usually means FanGraphs hasn't caught up to news — trust the edge less.
+Rows highlight at net take edge ≥ +5%. Edges dim on books wider than 7¢ or when the 5 FanGraphs sources disagree by more than 10 points (red Src Range). Dimmed rows have no Kalshi quotes.">ⓘ how to read</span>
+</div>
 <div class="stale" id="stale"></div>
-<div class="filters" id="tabs"></div>
-<div class="filters lg" id="lgs"></div>
-<div class="meta" id="groupline" style="margin-top:4px"></div>
-<div class="tblwrap"><table id="tbl">
- <thead><tr>
-  <th data-k="outcome">Outcome</th>
-  <th data-k="team">Team</th>
-  <th data-k="div">Div</th>
-  <th data-k="fair_raw">Fair</th>
-  <th data-k="src_w" title="min–max across the 5 FanGraphs sources">Src Range</th>
-  <th data-k="book">Bid–Ask</th>
-  <th data-k="spread">Spread</th>
-  <th data-k="side">Take</th>
-  <th data-k="price">Price</th>
-  <th data-k="edge_raw">Take Edge</th>
-  <th data-k="post_side">Post</th>
-  <th data-k="post_roi">Post ROI</th>
-  <th data-k="ticker">Market</th>
- </tr></thead>
- <tbody id="rows"></tbody>
-</table></div>
-<p class="note">Take = crossing at the touch (Buy Yes edge = fair − ask · Buy No edge = bid − fair).
- Post = maker order at bid+1¢ (join on a 1¢ spread), ROI = fair ÷ post − 1 — no taker fees, fills not guaranteed.
- Rows highlight at take edge ≥ +5%. Edges dim on books wider than 7¢ or when the 5 FanGraphs sources
- disagree by more than 10 points (red Src Range). Dimmed rows have no Kalshi quotes.</p>
+<div class="filterrow">
+ <div class="filters" id="tabs"></div>
+ <div class="filters lg" id="lgs"></div>
+ <div class="meta" id="groupline"></div>
+</div>
+<div class="tables" id="tables"></div>
 
 <script>
 const DATA = __PAYLOAD__;
@@ -295,15 +291,16 @@ function setActive(bar, btn) {
   btn.classList.add("active");
 }
 
-// ---- sorting (raw-value aware, nulls last)
+// ---- sorting (raw-value aware, nulls last; headers are re-created every draw,
+// so clicks are delegated from the container)
 let sortKey = "edge_raw", sortDir = -1;
-document.querySelectorAll("thead th").forEach(th => {
-  th.onclick = () => {
-    const k = th.dataset.k;
-    sortDir = (sortKey === k) ? -sortDir : (k === "team" || k === "outcome" || k === "div" ? 1 : -1);
-    sortKey = k;
-    draw();
-  };
+document.getElementById("tables").addEventListener("click", e => {
+  const th = e.target.closest("th");
+  if (!th) return;
+  const k = th.dataset.k;
+  sortDir = (sortKey === k) ? -sortDir : (k === "team" || k === "div" ? 1 : -1);
+  sortKey = k;
+  draw();
 });
 function cmp(a, b) {
   const va = a[sortKey], vb = b[sortKey];
@@ -314,15 +311,54 @@ function cmp(a, b) {
   return String(va).localeCompare(String(vb)) * sortDir;
 }
 
+// Division column only means something on the division tabs — drop it on the
+// league/field-wide markets to give the fit-scaler more width to work with.
+const NO_DIV_TABS = new Set(["Make Playoffs", "Win Pennant", "Win World Series"]);
+
+// Column model: header label + full <td> renderer per row.
+const COLS = [
+  {k: "team", label: "Team", left: 1,
+   td: r => `<td class="left">${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" title="Open on Kalshi">${r.team}</a>` : r.team}</td>`},
+  {k: "div", label: "Div", left: 1, td: r => `<td class="left">${r.div}</td>`},
+  {k: "fair_raw", label: "Fair", td: r => `<td>${r.fair || "—"}</td>`},
+  {k: "pinn_raw", label: "Pinn", optional: 1, title: "De-vigged Pinnacle futures — independent sharp anchor; a big Fair-vs-Pinn gap usually means FanGraphs hasn't caught up to news",
+   td: r => `<td>${r.pinn || "—"}</td>`},
+  {k: "src_w", label: "Src Range", title: "min–max across the 5 FanGraphs sources",
+   td: r => `<td class="${r.disagree ? "negv" : ""}" ${r.disagree ? 'title="sources disagree by >10 points — weak consensus"' : ""}>${r.src || "—"}</td>`},
+  {k: "book", label: "Bid–Ask", td: r => `<td>${r.book || "—"}</td>`},
+  {k: "spread", label: "Spread", td: r => `<td>${r.spread || "—"}</td>`},
+  {k: "side", label: "Take", td: r => `<td>${r.side ? `<span class="${r.side === "Yes" ? "pos" : "negv"}">${r.side}</span>` : "—"}</td>`},
+  {k: "price", label: "Price", td: r => `<td>${r.price || "—"}</td>`},
+  {k: "edge_raw", label: "Take Edge",
+   td: r => `<td class="${r.edge_raw == null ? "dash" : (r.edge_raw > 0 ? "pos" : "negv")}${r.wide ? " widecell" : ""}${r.disagree ? " widecell" : ""}">${r.edge || "—"}</td>`},
+  {k: "post_side", label: "Post", td: r => `<td>${r.post_side ? `<span class="${r.post_side === "Yes" ? "pos" : "negv"}">${r.post_side} ${r.post}</span>` : "—"}</td>`},
+  {k: "post_roi", label: "Post ROI",
+   td: r => `<td class="${r.post_roi == null ? "dash" : (r.post_roi > 0 ? "pos" : "negv")}${r.disagree ? " widecell" : ""}">${r.post_roi_d || "—"}</td>`},
+  {k: "ticker", label: "Market", td: r => `<td>${r.url ? `<a href="${r.url}" target="_blank" rel="noopener">${r.ticker}</a>` : (r.ticker || "—")}</td>`},
+];
+
+function tableHTML(rows, cols) {
+  const head = cols.map(c =>
+    `<th data-k="${c.k}"${c.title ? ` title="${c.title}"` : ""} class="${c.left ? "left " : ""}${sortKey === c.k ? (sortDir === 1 ? "sorted-asc" : "sorted-desc") : ""}">${c.label}</th>`).join("");
+  const body = rows.map(r => {
+    const cls = [];
+    if (r.edge_raw != null && r.edge_raw >= 0.05) cls.push("big");
+    if (!r.side) cls.push("noquote");
+    return `<tr class="${cls.join(" ")}">${cols.map(c => c.td(r)).join("")}</tr>`;
+  }).join("");
+  return `<div class="tblwrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
 function draw() {
-  document.querySelectorAll("thead th").forEach(th => {
-    th.classList.toggle("sorted-asc", th.dataset.k === sortKey && sortDir === 1);
-    th.classList.toggle("sorted-desc", th.dataset.k === sortKey && sortDir === -1);
-  });
   const rows = DATA.rows
     .filter(r => (r.tab === activeTab) &&
                  (activeLg === "All" || r.league === activeLg))
     .sort(cmp);
+  // Drop the Div column on league/field-wide tabs, and optional columns
+  // (e.g. Pinnacle) on tabs where no row has a value (no futures offered).
+  const cols = COLS.filter(c =>
+    !(NO_DIV_TABS.has(activeTab) && c.k === "div") &&
+    !(c.optional && !rows.some(r => r[c.k] != null)));
   // Group consistency: fair should sum to ~100% per division/pennant group
   // (~1200% for the 12 playoff spots) — a rich/cheap ask sum flags a whole
   // group mispriced, not just one team. Computed over the FULL tab (both leagues).
@@ -337,29 +373,66 @@ function draw() {
       ? ` <span class="negv">— book is rich; NO side favored</span>`
       : quoted.length === grp.length && askSum < fairSum - 2
       ? ` <span class="pos">— book is cheap; YES side favored</span>` : "");
-  document.getElementById("rows").innerHTML = rows.map(r => {
-    const cls = [];
-    if (r.edge_raw != null && r.edge_raw >= 0.05) cls.push("big");
-    if (!r.side) cls.push("noquote");
-    const edgeCls = r.edge_raw == null ? "dash" : (r.edge_raw > 0 ? "pos" : "negv");
-    const wide = r.wide ? " widecell" : "";
-    return `<tr class="${cls.join(" ")}">
-      <td>${r.outcome}</td>
-      <td>${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" title="Open on Kalshi">${r.team}</a>` : r.team}</td>
-      <td>${r.div}</td>
-      <td>${r.fair || "—"}</td>
-      <td class="${r.disagree ? "negv" : ""}" ${r.disagree ? 'title="sources disagree by >10 points — weak consensus"' : ""}>${r.src || "—"}</td>
-      <td>${r.book || "—"}</td>
-      <td>${r.spread || "—"}</td>
-      <td>${r.side ? `<span class="${r.side === "Yes" ? "pos" : "negv"}">${r.side}</span>` : "—"}</td>
-      <td>${r.price || "—"}</td>
-      <td class="${edgeCls}${wide}${r.disagree ? " widecell" : ""}">${r.edge || "—"}</td>
-      <td>${r.post_side ? `<span class="${r.post_side === "Yes" ? "pos" : "negv"}">${r.post_side} ${r.post}</span>` : "—"}</td>
-      <td class="${r.post_roi == null ? "dash" : (r.post_roi > 0 ? "pos" : "negv")}${r.disagree ? " widecell" : ""}">${r.post_roi_d || "—"}</td>
-      <td>${r.url ? `<a href="${r.url}" target="_blank" rel="noopener">${r.ticker}</a>` : (r.ticker || "—")}</td>
-    </tr>`;
-  }).join("");
+  // Try both layouts — one table, and two half-height tables side by side —
+  // and keep whichever fits the window at the LARGER scale. Splitting only
+  // helps when height is the binding constraint AND the doubled width still
+  // fits; measuring beats guessing from the aspect ratio.
+  const el = document.getElementById("tables");
+  let best = {s: -1, html: ""};
+  for (const n of (rows.length > 16 ? [1, 2] : [1])) {
+    const per = Math.ceil(rows.length / n);
+    const parts = [];
+    for (let i = 0; i < rows.length; i += per) parts.push(rows.slice(i, i + per));
+    const h = parts.map(p => tableHTML(p, cols)).join("");
+    el.innerHTML = h;
+    const s = idealScale();
+    if (s > best.s + 0.001) best = {s, html: h};
+  }
+  el.innerHTML = best.html;
+  requestAnimationFrame(fit);
 }
+
+// ---- fit-to-viewport: scale the page so every row AND the ticker column are
+// on screen with no scrolling, whatever the window/tab size. Scales DOWN when
+// content overflows and UP (to MAX_SCALE) when there's spare room, so the text
+// is always as big as the window allows.
+const useZoom = typeof CSS !== "undefined" && CSS.supports && CSS.supports("zoom", "0.5");
+const MAX_SCALE = 3;
+function apply(s) {
+  const b = document.body;
+  if (useZoom) { b.style.zoom = s; }
+  else {
+    b.style.transformOrigin = "0 0";
+    b.style.transform = s === 1 ? "" : `scale(${s})`;
+    b.style.width = s === 1 ? "" : (100 / s) + "%";
+  }
+}
+// Measure the content's NATURAL size by toggling the wrap to width:max-content
+// (document.body always spans the full window, so it can't be measured). The
+// class comes straight back off, so at rest the wrap — and the tables inside —
+// stretch to the right edge and any leftover width pads the columns instead of
+// piling up as blank margin.
+function idealScale() {
+  const w = document.querySelector(".wrap");
+  apply(1);
+  w.classList.add("measure");
+  const s = Math.min(MAX_SCALE, innerWidth / w.offsetWidth, innerHeight / w.offsetHeight);
+  w.classList.remove("measure");
+  return s;
+}
+function fit() {
+  const de = document.documentElement;
+  let s = idealScale();
+  apply(s);
+  // Upscaling can create overflow the 1:1 measurement couldn't see (nowrap
+  // columns hitting the viewport edge) — back off until nothing scrolls.
+  for (let i = 0; i < 6 && s > 0.3 &&
+       (de.scrollWidth > innerWidth + 1 || de.scrollHeight > innerHeight + 1); i++) {
+    s *= 0.94;
+    apply(s);
+  }
+}
+window.addEventListener("resize", draw);   // re-draw: the split decision depends on orientation
 draw();
 </script>
 </body>
