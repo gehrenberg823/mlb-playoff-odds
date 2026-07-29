@@ -125,13 +125,22 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
         yes_post = _post(bid, ask)
         no_post = _post(None if pd.isna(ask) else 1 - ask,
                         None if pd.isna(bid) else 1 - bid)
+        # KXMLB (WS) + KXMLBAL/NL (pennants) are fee_type=quadratic_with_maker_fees:
+        # makers pay 0.0175·P·(1−P) there (a quarter of the taker rate; verified vs
+        # MM fill fee_cost). Playoffs + division series are plain quadratic = maker-free.
+        def _mfee(p):
+            if r["outcome"] in ("win_world_series", "win_pennant"):
+                return 0.0175 * p * (1 - p)
+            return 0.0
         post_side = post_price = post_roi = None
         if not pd.isna(fair):
             pcands = []
             if yes_post:
-                pcands.append(("Yes", yes_post, float(fair) / yes_post - 1.0))
+                pcands.append(("Yes", yes_post,
+                               (float(fair) - yes_post - _mfee(yes_post)) / yes_post))
             if no_post:
-                pcands.append(("No", no_post, float(1 - fair) / no_post - 1.0))
+                pcands.append(("No", no_post,
+                               (float(1 - fair) - no_post - _mfee(no_post)) / no_post))
             if pcands:
                 post_side, post_price, post_roi = max(pcands, key=lambda c: c[2])
 
@@ -250,7 +259,7 @@ _TEMPLATE = r"""<!doctype html>
  <h1>MLB Playoff Odds — Fair vs Kalshi</h1>
  <div class="meta" id="meta"></div>
  <span class="help" title="Fair = FanGraphs 5-source consensus blended with de-vigged Pinnacle futures (70/30 in logit space) where Pinnacle offers the market; pure FanGraphs elsewhere (hover Fair for the components).
-Take = crossing at the touch, NET of Kalshi taker fees (Buy Yes edge = fair − ask − 0.07·ask·(1−ask); Buy No mirrored). Post = maker order at bid+1¢ (join on a 1¢ spread), ROI = fair ÷ post − 1 — makers pay no fee, fills not guaranteed.
+Take = crossing at the touch, NET of Kalshi taker fees (Buy Yes edge = fair − ask − 0.07·ask·(1−ask); Buy No mirrored). Post = maker order at bid+1¢ (join on a 1¢ spread), ROI = (fair − post − maker fee) ÷ post. Maker fee is 0 on playoffs/divisions, but the WS + pennant series charge makers 0.0175·P·(1−P) — netted here. Fills not guaranteed.
 Rows highlight at net take edge ≥ +5%. Edges dim on books wider than 7¢, when the 5 FanGraphs sources disagree by more than 10 points (red Src Range), or with ⚠ when Pinnacle alone sees no edge on that side. Dimmed rows have no Kalshi quotes.">ⓘ how to read</span>
 </div>
 <div class="stale" id="stale"></div>
