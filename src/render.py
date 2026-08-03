@@ -103,6 +103,7 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
         # Pinnacle veto: if pricing off Pinnacle ALONE the chosen side has no
         # edge, the market is siding with the sharps against FanGraphs — dim it.
         pinn = r.get("pinnacle_prob")
+        fd_p = r.get("fanduel_prob")
         pinn_veto = False
         if edge is not None and edge > 0 and pinn is not None and not pd.isna(pinn):
             if side == "Yes" and not pd.isna(ask):
@@ -164,6 +165,8 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
             "pinn":     _fmt_pct(pinn),
             "pinn_raw": None if pinn is None or pd.isna(pinn) else float(pinn),
             "pinn_veto": bool(pinn_veto),
+            "fd":       _fmt_pct(fd_p),
+            "fd_raw":   None if fd_p is None or pd.isna(fd_p) else float(fd_p),
             "book":     (f"{_fmt_cents(bid)}–{_fmt_cents(ask)}"
                          if not pd.isna(bid) and not pd.isna(ask)
                          else _fmt_cents(bid) or _fmt_cents(ask)),
@@ -264,7 +267,7 @@ _TEMPLATE = r"""<!doctype html>
 <div class="top">
  <h1>MLB Playoff Odds — Fair vs Kalshi</h1>
  <div class="meta" id="meta"></div>
- <span class="help" title="Fair = FanGraphs 5-source consensus blended with de-vigged Pinnacle futures (70/30 in logit space) where Pinnacle offers the market; pure FanGraphs elsewhere (hover Fair for the components).
+ <span class="help" title="Fair = FanGraphs 5-source consensus blended 70/30 (logit space) with a market anchor of de-vigged Pinnacle (60%) and FanDuel (40%) futures, renormalized over whichever books price the market; pure FanGraphs where neither does (hover Fair for the components). FD's Make/Miss Playoffs pair devigs two-way, so make_playoffs now has a market anchor too.
 Take = crossing at the touch, NET of Kalshi taker fees (Buy Yes edge = fair − ask − 0.07·ask·(1−ask); Buy No mirrored). Post = maker order at bid+1¢ (join on a 1¢ spread), ROI = (fair − post − maker fee) ÷ post. Maker fee is 0 on playoffs/divisions, but the WS + pennant series charge makers 0.0175·P·(1−P) — netted here. Fills not guaranteed.
 Rows highlight at net take edge ≥ +5%. Edges dim on books wider than 7¢, when the 5 FanGraphs sources disagree by more than 10 points (red Src Range), or with ⚠ when Pinnacle alone sees no edge on that side. Dimmed rows have no Kalshi quotes.">ⓘ how to read</span>
  <button id="refresh" title="Re-run the pipeline (FanGraphs + Pinnacle + Kalshi) and reload">↻ Refresh</button>
@@ -379,9 +382,11 @@ const COLS = [
    td: r => `<td class="left">${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" title="Open on Kalshi">${r.team}</a>` : r.team}</td>`},
   {k: "div", label: "Div", left: 1, td: r => `<td class="left">${r.div}</td>`},
   {k: "fair_raw", label: "Fair",
-   td: r => `<td${r.pinn ? ` title="blend of FG ${r.fg} (70%) · Pinn ${r.pinn} (30%)"` : ""}>${r.fair || "—"}</td>`},
-  {k: "pinn_raw", label: "Pinn", optional: 1, title: "De-vigged Pinnacle futures — blended into Fair at 30% where offered; a big FG-vs-Pinn gap usually means FanGraphs hasn't caught up to news",
+   td: r => `<td${(r.pinn || r.fd) ? ` title="blend of FG ${r.fg} (70%) · market ${[r.pinn ? "Pinn "+r.pinn+" (60)" : "", r.fd ? "FD "+r.fd+" (40)" : ""].filter(Boolean).join(" · ")} (30%)"` : ""}>${r.fair || "—"}</td>`},
+  {k: "pinn_raw", label: "Pinn", optional: 1, title: "De-vigged Pinnacle futures — 60% of the market anchor (30% of Fair); a big FG-vs-Pinn gap usually means FanGraphs hasn't caught up to news",
    td: r => `<td>${r.pinn || "—"}</td>`},
+  {k: "fd_raw", label: "FD", optional: 1, title: "De-vigged FanDuel futures — 40% of the market anchor (30% of Fair); make-playoffs prices devig two-way from FD's Make/Miss pair",
+   td: r => `<td>${r.fd || "—"}</td>`},
   {k: "src_w", label: "Src Range", title: "min–max across the 5 FanGraphs sources",
    td: r => `<td class="${r.disagree ? "negv" : ""}" ${r.disagree ? 'title="sources disagree by >10 points — weak consensus"' : ""}>${r.src || "—"}</td>`},
   {k: "book", label: "Bid–Ask", td: r => `<td>${r.book || "—"}</td>`},

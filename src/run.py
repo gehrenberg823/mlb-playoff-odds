@@ -42,7 +42,7 @@ def run(target_date: str | None = None) -> Path:
     print("[3/4] Fetching Kalshi markets…")
     kal = fetch_kalshi(cfg)
 
-    # Optional sharp anchor — a Pinnacle outage must never block the report.
+    # Optional market anchors — a book outage must never block the report.
     try:
         from .pinnacle import fetch_futures
         pinn = fetch_futures(load_team_map())
@@ -50,9 +50,16 @@ def run(target_date: str | None = None) -> Path:
     except Exception as e:
         print(f"  Pinnacle futures unavailable ({e}); continuing without.")
         pinn = None
+    try:
+        from .fanduel import fetch_futures as fetch_fd
+        fd = fetch_fd(load_team_map())
+        print(f"  FanDuel futures: {len(fd)} team-outcome prices")
+    except Exception as e:
+        print(f"  FanDuel futures unavailable ({e}); continuing without.")
+        fd = None
 
     print("[4/4] Building fair-vs-market report…")
-    report = build_report(agg, kal, load_team_map(), cfg, pinnacle_df=pinn)
+    report = build_report(agg, kal, load_team_map(), cfg, pinnacle_df=pinn, fanduel_df=fd)
     SIGNAL_DIR.mkdir(parents=True, exist_ok=True)
     out_path = SIGNAL_DIR / f"{target}.csv"
     report.to_csv(out_path, index=False)
