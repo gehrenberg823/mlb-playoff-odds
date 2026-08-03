@@ -224,6 +224,12 @@ _TEMPLATE = r"""<!doctype html>
  .meta{color:var(--mut);font-size:11.5px;margin:0}
  .meta b{color:var(--txt)}
  .help{color:var(--mut);font-size:11px;cursor:help;border-bottom:1px dotted var(--mut)}
+ #refresh{display:none;background:var(--card);color:var(--txt);border:1px solid var(--line);
+   padding:2px 10px;border-radius:999px;cursor:pointer;font-size:11.5px;font-weight:600}
+ #refresh:hover{border-color:var(--acc)}
+ #refresh:disabled{color:var(--mut);cursor:wait;border-color:var(--line)}
+ #refresherr{display:none;background:rgba(248,81,73,.12);border:1px solid var(--neg);color:var(--neg);
+   border-radius:8px;padding:4px 10px;font-size:11px;margin:4px 0 0;white-space:pre-wrap;max-height:180px;overflow:auto}
  .stale{display:none;background:rgba(210,153,34,.12);border:1px solid var(--amber);color:var(--amber);
    border-radius:8px;padding:4px 10px;font-size:11.5px;margin:4px 0 0}
  .filterrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:5px 0 0}
@@ -261,8 +267,10 @@ _TEMPLATE = r"""<!doctype html>
  <span class="help" title="Fair = FanGraphs 5-source consensus blended with de-vigged Pinnacle futures (70/30 in logit space) where Pinnacle offers the market; pure FanGraphs elsewhere (hover Fair for the components).
 Take = crossing at the touch, NET of Kalshi taker fees (Buy Yes edge = fair − ask − 0.07·ask·(1−ask); Buy No mirrored). Post = maker order at bid+1¢ (join on a 1¢ spread), ROI = (fair − post − maker fee) ÷ post. Maker fee is 0 on playoffs/divisions, but the WS + pennant series charge makers 0.0175·P·(1−P) — netted here. Fills not guaranteed.
 Rows highlight at net take edge ≥ +5%. Edges dim on books wider than 7¢, when the 5 FanGraphs sources disagree by more than 10 points (red Src Range), or with ⚠ when Pinnacle alone sees no edge on that side. Dimmed rows have no Kalshi quotes.">ⓘ how to read</span>
+ <button id="refresh" title="Re-run the pipeline (FanGraphs + Pinnacle + Kalshi) and reload">↻ Refresh</button>
 </div>
 <div class="stale" id="stale"></div>
+<div id="refresherr"></div>
 <div class="filterrow">
  <div class="filters" id="tabs"></div>
  <div class="filters lg" id="lgs"></div>
@@ -284,6 +292,35 @@ if (ageH > 24) {
   const s = document.getElementById("stale");
   s.style.display = "block";
   s.textContent = `⚠ This snapshot is ${Math.round(ageH)} hours old — the daily refresh may have failed.`;
+}
+
+// ---- refresh button: only live when served by the local app.py, not on Pages
+const refBtn = document.getElementById("refresh");
+if (["localhost", "127.0.0.1"].includes(location.hostname)) {
+  refBtn.style.display = "inline-block";
+  refBtn.onclick = async () => {
+    refBtn.disabled = true;
+    const err = document.getElementById("refresherr");
+    err.style.display = "none";
+    const t0 = Date.now();
+    const tick = setInterval(() => {
+      refBtn.textContent = `↻ Refreshing… ${Math.round((Date.now() - t0) / 1000)}s`;
+    }, 1000);
+    try {
+      const r = await fetch("/refresh", {method: "POST"});
+      const j = await r.json();
+      if (j.ok) { location.reload(); return; }
+      err.textContent = j.output || "Refresh failed.";
+      err.style.display = "block";
+    } catch (e) {
+      err.textContent = "Refresh failed: " + e;
+      err.style.display = "block";
+    } finally {
+      clearInterval(tick);
+      refBtn.disabled = false;
+      refBtn.textContent = "↻ Refresh";
+    }
+  };
 }
 
 // ---- filters: outcome tabs + league pills

@@ -76,6 +76,24 @@ def fetch_futures(team_map: pd.DataFrame, timeout: int = 40) -> pd.DataFrame:
             if (m.get("special") or {}).get("category") == "Futures"
             and (m.get("league") or {}).get("name") == "MLB"]
 
+    # Prices via the league-wide markets endpoint rather than per-matchup
+    # /matchups/{id}/markets/related/straight: Pinnacle started geo-blocking
+    # the per-matchup endpoint for futures from US IPs (403 BAD_LOCATION,
+    # seen on NFL 2026-08-02; MLB still answered but is presumably next).
+    # The league endpoint carries the same moneylines, one request for all.
+    by_matchup = {}
+    for lid in {m["league"]["id"] for m in futs}:
+        r = requests.get(f"{BASE}/leagues/{lid}/markets/straight",
+                         headers=HEADERS, timeout=timeout)
+        body = r.json() if "json" in r.headers.get("content-type", "") else None
+        if not isinstance(body, list):
+            title = body.get("title") if isinstance(body, dict) else ""
+            print(f"  Pinnacle sanity: league {lid} markets HTTP {r.status_code} {title or ''}")
+            continue
+        for mk in body:
+            if mk.get("type") == "moneyline" and mk.get("period") == 0:
+                by_matchup[mk.get("matchupId")] = mk
+
     nick_to_abbr = {str(r.team_name).lower(): r.fg_abbr for r in team_map.itertuples()}
 
     def abbr_for(full_name: str) -> str | None:
@@ -106,11 +124,9 @@ def fetch_futures(team_map: pd.DataFrame, timeout: int = 40) -> pd.DataFrame:
         if len(parts) != EXPECTED_TEAMS[outcome]:
             skip(f"{len(parts)} participants, expected {EXPECTED_TEAMS[outcome]}")
             continue
-        mkts = requests.get(f"{BASE}/matchups/{m['id']}/markets/related/straight",
-                            headers=HEADERS, timeout=timeout).json()
-        ml = next((x for x in mkts if x.get("type") == "moneyline" and x.get("period") == 0), None)
+        ml = by_matchup.get(m["id"])
         if not ml:
-            skip("no moneyline market in payload")
+            skip("no moneyline on league markets endpoint")
             continue
         priced = [(p["participantId"], p["price"]) for p in ml.get("prices", [])
                   if p.get("price") is not None and p.get("participantId") in parts]
