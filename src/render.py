@@ -62,6 +62,16 @@ def _fmt_cents(x):
     return "" if pd.isna(x) else f"{x * 100:.0f}¢"
 
 
+def _fmt_cents_frac(x):
+    """Cents with one decimal when fractional (these Kalshi season books tick
+    in 0.1¢ at the tails, e.g. ask 2.5¢ / bid 2.2¢): 28¢, 2.3¢. Rounds to
+    0.1¢ first so float noise (7.000000000000001) still prints clean."""
+    if x is None or pd.isna(x):
+        return None
+    c = round(x * 100, 1)
+    return f"{c:.0f}¢" if c == int(c) else f"{c:.1f}¢"
+
+
 def _market_url(ticker: str) -> str:
     """Deep link to the exact market: /markets/{series}/{event}?op_market_ticker=.
     KXMLBPLAYOFFS-26-CWS -> series kxmlbplayoffs, event kxmlbplayoffs-26."""
@@ -182,7 +192,7 @@ def _to_rows(df: pd.DataFrame) -> list[dict]:
             "src_w":    None if not has_range else float(fmax - fmin),
             "disagree": disagree,
             "post_side": post_side,
-            "post":     None if post_price is None else f"{post_price * 100:.0f}¢",
+            "post":     _fmt_cents_frac(post_price),
             "post_roi": post_roi,
             "post_roi_d": None if post_roi is None else f"{post_roi * 100:+.1f}%",
             "ticker":   ticker,
