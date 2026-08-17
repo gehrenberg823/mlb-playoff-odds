@@ -28,7 +28,13 @@ _GROUP_PATTERNS = [
 _MAKE_RE = re.compile(r"^Team to Make Playoffs \d{4}$", re.I)
 _MISS_RE = re.compile(r"^Team to Miss Playoffs \d{4}$", re.I)
 
-EXPECTED_TEAMS = {"win_world_series": 30, "win_pennant": 15, "win_division": 5}
+# Season-start field sizes — an upper bound, not an exact requirement:
+# FanDuel DELISTS eliminated teams as the season goes (WS market was down to
+# 24 runners by 2026-08-08, which the old exact-count guard wrongly skipped).
+# Delisted teams carry ~0% probability, so devigging the remainder is sound;
+# the overround band below is what rejects a genuinely partial book (a
+# missing *material* team drags the implied sum under 1.01).
+MAX_TEAMS = {"win_world_series": 30, "win_pennant": 15, "win_division": 5}
 OVERROUND_BAND = (1.01, 2.0)          # N-way group markets
 TWO_WAY_BAND = (1.005, 1.30)          # per-team make/miss pair
 
@@ -90,10 +96,18 @@ def fetch_futures(team_map: pd.DataFrame, timeout: int = 30) -> pd.DataFrame:
             def skip(reason: str):
                 print(f"  FanDuel sanity: SKIPPING '{name}' — {reason}")
 
+            runners = mk.get("runners") or []
             priced = _runner_prices(mk)
-            want = EXPECTED_TEAMS[outcome]
-            if len(priced) != want:
-                skip(f"{len(priced)}/{want} teams priced — devig would inflate the rest")
+            if len(priced) > MAX_TEAMS[outcome]:
+                skip(f"{len(priced)} teams priced, more than the field of "
+                     f"{MAX_TEAMS[outcome]} — name/dup bug")
+                continue
+            if len(priced) < len(runners):
+                skip(f"{len(runners) - len(priced)} of {len(runners)} listed "
+                     "runner(s) unpriced — book mid-update")
+                continue
+            if len(priced) < 2:
+                skip("fewer than 2 priced teams — nothing to devig")
                 continue
             unmapped = [nm for nm, _ in priced if abbr_for(nm) is None]
             if unmapped:
